@@ -1,0 +1,19 @@
+{
+  "storageAccountName": {
+    "type": "String",
+    "value": "@appsetting('storageAccountName')"
+  },
+  "BLOB_AUTHENTICATION": {
+    "type": "Object",
+    "value": {
+      "type": "Raw",
+      "scheme": "Key",
+      "parameter": "@appsetting('azureblob-connectionKey')"
+    }
+  },
+  "BLOB_CONNECTION_PROPERTIES": {
+    "type": "Object",
+    "value": {
+    }
+  }
+}

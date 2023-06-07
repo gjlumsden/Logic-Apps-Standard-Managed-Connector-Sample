@@ -1,0 +1,21 @@
+{
+    "BLOB_AUTHENTICATION": {
+        "type": "Object",
+        "value": {
+            "type": "ManagedServiceIdentity"
+        }
+    },
+    "BLOB_CONNECTION_PROPERTIES": {
+        "type": "Object",
+        "value": {
+            "authentication": {
+                "audience": "https://storage.azure.com/",
+                "type": "ManagedServiceIdentity"
+            }
+        }
+    },
+    "storageAccountName": {
+        "type": "String",
+        "value": "@appsetting('storageAccountName')"
+    }
+}

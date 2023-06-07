@@ -1,0 +1,18 @@
+{
+  "managedApiConnections": {
+    "azureblob": {
+      "api": {
+        "id": "/subscriptions/{Subscription-ID}/providers/Microsoft.Web/locations/{Location}/managedApis/azureblob"
+      },
+      "connection": {
+        "id": "/subscriptions/{Subscription-ID}/resourceGroups/{Resource-Group-Name}/providers/Microsoft.Web/connections/azureblob"
+      },
+      "connectionRuntimeUrl": "{}",
+      "authentication": {
+        "type": "Raw",
+        "scheme": "Key",
+        "parameter": "@appsetting('azureblob-connectionKey')"
+      }
+    }
+  }
+}

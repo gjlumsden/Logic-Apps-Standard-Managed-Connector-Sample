@@ -1,0 +1,159 @@
+trigger: none
+pr: none
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  - name: azureServiceConnectionName
+    value: Logic-Apps-Service-Connection
+  - name: resourceGroupName
+    value: my-logic-app-rg
+  - name: appNamePrefix
+    value: ais
+
+
+stages:
+- stage: Build
+  displayName: 'Publish Logic App and Bicep'
+  jobs:
+  - job: Copy_Logic_App_Files
+    displayName: 'Build and publish logic app'
+    steps:
+    - task: PowerShell@2
+      displayName: 'Overwrite Parameters with Azure Parameters'
+      inputs:
+        targetType: 'inline'
+        script: 'cp $(System.DefaultWorkingDirectory)/Prepared/logic-app/azure.parameters.json $(System.DefaultWorkingDirectory)/Prepared/logic-app/parameters.json'
+        pwsh: true
+      
+    - task: CopyFiles@2
+      displayName: 'Create project folder'
+      inputs:
+        SourceFolder: 'Prepared/logic-app'
+        TargetFolder: 'output/logic-app'
+
+    - task: ArchiveFiles@2
+      displayName: 'Create project zip'
+      inputs:
+        rootFolderOrFile: '$(System.DefaultWorkingDirectory)/output/logic-app'
+        includeRootFolder: false
+        archiveType: 'zip'
+        archiveFile: '$(Build.ArtifactStagingDirectory)/$(Build.BuildId).zip'
+        replaceExistingArchive: true
+
+    - publish: "$(Build.ArtifactStagingDirectory)/$(Build.BuildId).zip"
+      displayName: "Publish project zip artifact"
+      artifact: "logic-app"
+
+  - job: Copy_Bicep_Files
+    steps:
+      - task: CopyFiles@2
+        displayName: 'Copy Bicep'
+        inputs:
+          sourceFolder: 'Prepared/.deploy/.Azure'
+          targetFolder: '$(Build.ArtifactStagingDirectory)'
+
+      - publish: '$(Build.ArtifactStagingDirectory)'
+        artifact: bicep
+
+- stage: Deploy_Base_Infrastructure
+  displayName: 'Deploy Logic App Base Infrastructure'
+  jobs:
+  - deployment: deploy_azure_infrastructure
+    environment: Core_Infrastructure_AIS
+    displayName: "Deploy Core Infrastructure"
+    dependsOn: []
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+            - task: AzureResourceManagerTemplateDeployment@3
+              displayName: "Deploy Infrastructure"
+              name: Deploy_Core_Infrastructure
+              inputs:
+                resourceGroupName: $(resourceGroupName)
+                templateLocation: Linked artifact
+                csmFile: "$(Agent.BuildDirectory)/bicep/main.bicep"
+                deploymentScope: Resource Group
+                azureResourceManagerConnection: $(azureServiceConnectionName)
+                location: uksouth
+                overrideParameters: -appNamePrefix $(appNamePrefix)
+                deploymentMode: Incremental
+                deploymentOutputs: bicepOutputs
+                action: Create Or Update Resource Group
+
+            - pwsh: |
+                    $bicepOutput = '$(bicepOutputs)' | ConvertFrom-Json
+                    echo "##vso[task.setvariable variable=logicAppName;isOutput=true]$($bicepOutput.logicAppName.value)"
+              displayName: Extract Bicep Outputs
+              name: set_variables_from_bicep_outputs
+
+- stage: Deploy_Connections_and_Dependencies
+  dependsOn: Deploy_Base_Infrastructure
+  displayName: 'Deploy Connections and Dependencies'
+  jobs:
+  - deployment: publish_logic_app_connections_infrastructure
+    displayName: Publish Logic App Connections Infrastructure
+    dependsOn: []
+    environment: App_Infrastructure_AIS
+    variables:
+    - name: logicAppName
+      value: $[ stageDependencies.Deploy_Base_Infrastructure.deploy_azure_infrastructure.outputs['deploy_azure_infrastructure.set_variables_from_bicep_outputs.logicAppName'] ]
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: AzureResourceManagerTemplateDeployment@3
+            displayName: "Deploy Application Infrastructure"
+            inputs:
+              resourceGroupName: $(resourceGroupName)
+              templateLocation: Linked artifact
+              csmFile: "$(Agent.BuildDirectory)/bicep/connections.bicep"
+              deploymentScope: Resource Group
+              azureResourceManagerConnection: $(azureServiceConnectionName)
+              location: uksouth
+              overrideParameters: -logicAppName $(logicAppName) -appNamePrefix $(appNamePrefix)
+              deploymentMode: Incremental
+              deploymentOutputs: bicepOutputs
+              action: Create Or Update Resource Group
+          - pwsh: |
+                  $bicepOutput = '$(bicepOutputs)' | ConvertFrom-Json
+                  echo "##vso[task.setvariable variable=blobConnectionRuntimeUrl]$($bicepOutput.blobConnectionRuntimeUrl.value)"
+                  echo "##vso[task.setvariable variable=storageAccountName]$($bicepOutput.storageAccountName.value)"
+                  echo "##vso[task.setvariable variable=blobConnectionName]$($bicepOutput.blobConnectionName.value)"
+            displayName: 'Extract Connection Outputs'
+            name: set_variables_from_bicep_outputs
+          - task: AzureCLI@2
+            inputs:
+              azureSubscription: $(azureServiceConnectionName)
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                az functionapp config appsettings set --name $(logicAppName) --resource-group  $(resourceGroupName) --settings "BLOB_CONNECTION_RUNTIMEURL=$(blobConnectionRuntimeUrl)" "storageAccountName=$(storageAccountName)" "BLOB_CONNECTION_NAME=$(blobConnectionName)"
+
+- stage: Deploy_Logic_App
+  dependsOn: 
+  - Deploy_Connections_and_Dependencies
+  - Deploy_Base_Infrastructure
+  displayName: 'Deploy Logic App Source'
+  jobs:
+  - deployment: Deploy_Logic_App
+    displayName: Publish Logic App Workflows
+    dependsOn: []
+    environment: App_Infrastructure_AIS
+    variables:
+    - name: logicAppName
+      value: $[ stageDependencies.Deploy_Base_Infrastructure.deploy_azure_infrastructure.outputs['deploy_azure_infrastructure.set_variables_from_bicep_outputs.logicAppName'] ]
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: AzureCLI@2
+            inputs:
+              azureSubscription: $(azureServiceConnectionName)
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                az functionapp deployment source config-zip -g $(resourceGroupName) -n $(logicAppName) --src $(Agent.BuildDirectory)/logic-app/$(Build.BuildId).zip
+
